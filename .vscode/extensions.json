@@ -5,6 +5,14 @@
 		"ms-vscode.cpptools",
 		"austin.code-gnu-global",
 		"marus25.cortex-debug",
-		"augustocdias.tasks-shell-input"
+		"augustocdias.tasks-shell-input",
+		"ms-toolsai.vscode-jupyter-cell-tags",
+		"davidanson.vscode-markdownlint",
+		"esbenp.prettier-vscode",
+		"codespaces-contrib.codeswing",
+		"whisper-language.whisper-language",
+		"tyriar.luna-paint",
+		"ms-toolsai.vscode-jupyter-slideshow",
+		"qwtel.sqlite-viewer"
 	]
 }
