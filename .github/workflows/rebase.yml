@@ -12,4 +12,4 @@ jobs:
         changelog_regex: '/CHANGELOG.md'
         customPrMessage: 'You are welcome to add an entry to the CHANGELOG.md as well'
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{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 }}
