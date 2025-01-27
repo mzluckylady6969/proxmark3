@@ -30,6 +30,8 @@
 #include "cmdhftopaz.h"
 #include "cmdnfc.h"
 #include "fileutils.h"
+#include "mifare/mifaredefault.h"
+#include "mifare/mad.h"
 
 void print_type4_cc_info(uint8_t *d, uint8_t n) {
     if (n < 0x0F) {
@@ -81,7 +83,7 @@ static int CmdNfcDecode(const char *Cmd) {
         arg_param_begin,
         arg_str0("d",  "data", "<hex>", "NDEF data to decode"),
         arg_str0("f", "file", "<fn>", "file to load"),
-        arg_lit0("v",  "verbose", "verbose mode"),
+        arg_lit0("v",  "verbose", "verbose output"),
         arg_param_end
     };
     CLIExecWithReturn(ctx, Cmd, argtable, false);
@@ -107,14 +109,53 @@ static int CmdNfcDecode(const char *Cmd) {
         uint8_t *dump = NULL;
         size_t bytes_read = 4096;
         res = pm3_load_dump(filename, (void **)&dump, &bytes_read, 4096);
-        if (res != PM3_SUCCESS || dump == NULL) {
+        if (res != PM3_SUCCESS || dump == NULL || bytes_read > 4096) {
             return res;
         }
 
-        res = NDEFDecodeAndPrint(dump, bytes_read, verbose);
+        uint8_t *tmp = dump;
+
+        // if not MIFARE Classic default sizes,  assume its Ultralight/NTAG
+        if (bytes_read != MIFARE_4K_MAX_BYTES
+                && bytes_read != MIFARE_2K_MAX_BYTES
+                && bytes_read != MIFARE_1K_MAX_BYTES
+                && bytes_read != MIFARE_1K_EV1_MAX_BYTES
+                && bytes_read != MIFARE_MINI_MAX_BYTES) {
+
+            uint8_t **pd = &tmp;
+            mfu_df_e df = detect_mfu_dump_format(pd, verbose);
+            if (df == MFU_DF_OLDBIN) {
+                tmp += OLD_MFU_DUMP_PREFIX_LENGTH + (4 * 4);
+                bytes_read -= OLD_MFU_DUMP_PREFIX_LENGTH + (4 * 4);
+            } else if (df == MFU_DF_NEWBIN) {
+                tmp += MFU_DUMP_PREFIX_LENGTH + (4 * 4);
+                bytes_read -= MFU_DUMP_PREFIX_LENGTH + (4 * 4);
+            }
+            pd = NULL;
+
+        } else  {
+
+            // convert from MFC dump file to a pure NDEF byte array
+            if (HasMADKey(tmp)) {
+                PrintAndLogEx(SUCCESS, "MFC dump file detected. Converting...");
+                uint8_t ndef[4096] = {0};
+                uint16_t ndeflen = 0;
+
+                if (convert_mad_to_arr(tmp, bytes_read, ndef, &ndeflen) != PM3_SUCCESS) {
+                    PrintAndLogEx(FAILED, "Failed converting, aborting...");
+                    free(dump);
+                    return PM3_ESOFT;
+                }
+
+                memcpy(tmp, ndef, ndeflen);
+                bytes_read = ndeflen;
+            }
+        }
+
+        res = NDEFDecodeAndPrint(tmp, bytes_read, verbose);
         if (res != PM3_SUCCESS) {
             PrintAndLogEx(INFO, "Trying to parse NDEF records w/o NDEF header");
-            res = NDEFRecordsDecodeAndPrint(dump, bytes_read, verbose);
+            res = NDEFRecordsDecodeAndPrint(tmp, bytes_read, verbose);
         }
 
         free(dump);

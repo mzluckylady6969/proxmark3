@@ -2,6 +2,7 @@ on: pull_request_target
 name: Changelog Reminder
 jobs:
   remind:
+    if: github.repository_owner == 'RfidResearchGroup'
     name: Changelog Reminder
     runs-on: ubuntu-latest
     steps:
@@ -9,7 +10,7 @@ jobs:
     - name: Changelog Reminder
       uses: peterjgrainger/action-changelog-reminder@v1.2.0
       with:
-        changelog_regex: '/CHANGELOG.md'
+        changelog_regex: 'CHANGELOG.md'
         customPrMessage: 'You are welcome to add an entry to the CHANGELOG.md as well'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
