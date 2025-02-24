@@ -22,6 +22,7 @@
 #ifdef HAVE_PYTHON
 //#define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <ctype.h>
 #include <wchar.h>
 #endif
 
@@ -54,55 +55,73 @@ extern PyObject *PyInit__pm3(void);
 static int Pm3PyRun_SimpleFileNoExit(FILE *fp, const char *filename) {
     PyObject *m, *d, *v;
     int set_file_name = 0, ret = -1;
+
     m = PyImport_AddModule("__main__");
-    if (m == NULL)
+    if (m == NULL) {
         return -1;
+    }
+
     Py_INCREF(m);
     d = PyModule_GetDict(m);
+
     if (PyDict_GetItemString(d, "__file__") == NULL) {
+
         PyObject *f;
         f = PyUnicode_DecodeFSDefault(filename);
-        if (f == NULL)
+        if (f == NULL) {
             goto done;
+        }
+
         if (PyDict_SetItemString(d, "__file__", f) < 0) {
             Py_DECREF(f);
             goto done;
         }
+
         if (PyDict_SetItemString(d, "__cached__", Py_None) < 0) {
             Py_DECREF(f);
             goto done;
         }
+
         set_file_name = 1;
         Py_DECREF(f);
     }
+
     v = PyRun_FileExFlags(fp, filename, Py_file_input, d, d, 1, NULL);
     if (v == NULL) {
+
         Py_CLEAR(m);
+
         if (PyErr_ExceptionMatches(PyExc_SystemExit)) {
             // PyErr_Print() exists if SystemExit so we've to handle it ourselves
             PyObject *ty = 0, *er = 0, *tr = 0;
             PyErr_Fetch(&ty, &er, &tr);
+
             long err = PyLong_AsLong(er);
             if (err) {
                 PrintAndLogEx(WARNING, "\nScript terminated by " _YELLOW_("SystemExit %li"), err);
             } else {
                 ret = 0;
             }
+
             Py_DECREF(ty);
             Py_DECREF(er);
             Py_DECREF(er);
             PyErr_Clear();
             goto done;
+
         } else {
             PyErr_Print();
         }
         goto done;
     }
+
     Py_DECREF(v);
     ret = 0;
+
 done:
-    if (set_file_name && PyDict_DelItemString(d, "__file__"))
+    if (set_file_name && PyDict_DelItemString(d, "__file__")) {
         PyErr_Clear();
+    }
     Py_XDECREF(m);
     return ret;
 }
@@ -128,16 +147,20 @@ static int split(char *str, char **arr) {
     int word_cnt = 0;
 
     while (1) {
+
         while (isspace(str[begin_index])) {
             ++begin_index;
         }
+
         if (str[begin_index] == '\0') {
             break;
         }
+
         int end_index = begin_index;
         while (str[end_index] && !isspace(str[end_index])) {
             ++end_index;
         }
+
         int len = end_index - begin_index;
         char *tmp = calloc(len + 1, sizeof(char));
         memcpy(tmp, &str[begin_index], len);
@@ -147,7 +170,7 @@ static int split(char *str, char **arr) {
     return word_cnt;
 }
 
-static void set_python_path(char *path) {
+static void set_python_path(const char *path) {
     PyObject *syspath = PySys_GetObject("path");
     if (syspath == 0) {
         PrintAndLogEx(WARNING, "Python failed to getobject");
@@ -164,37 +187,44 @@ static void set_python_path(char *path) {
 }
 
 static void set_python_paths(void) {
-    //--add to the LUA_PATH (package.path in lua)
-    // so we can load scripts from various places:
+    // Prepending to sys.path so we can load scripts from various places.
+    // This means the following directories are in reverse order of
+    // priority for search python modules.
+
+    // Allow current working directory because it seems that's what users want.
+    // But put it with lower search priority than the typical pm3 scripts directories
+    // but still with a higher priority than the pip installed libraries to mimic
+    // Python interpreter behavior. That should be confusing the users the least.
+    set_python_path(".");
     const char *exec_path = get_my_executable_directory();
     if (exec_path != NULL) {
-        // from the ./luascripts/ directory
+        // from the ./pyscripts/ directory
         char scripts_path[strlen(exec_path) + strlen(PYTHON_SCRIPTS_SUBDIR) + strlen(PYTHON_LIBRARIES_WILDCARD) + 1];
         strcpy(scripts_path, exec_path);
         strcat(scripts_path, PYTHON_SCRIPTS_SUBDIR);
-//        strcat(scripts_path, PYTHON_LIBRARIES_WILDCARD);
+        // strcat(scripts_path, PYTHON_LIBRARIES_WILDCARD);
         set_python_path(scripts_path);
     }
 
     const char *user_path = get_my_user_directory();
     if (user_path != NULL) {
-        // from the $HOME/.proxmark3/luascripts/ directory
+        // from the $HOME/.proxmark3/pyscripts/ directory
         char scripts_path[strlen(user_path) + strlen(PM3_USER_DIRECTORY) + strlen(PYTHON_SCRIPTS_SUBDIR) + strlen(PYTHON_LIBRARIES_WILDCARD) + 1];
         strcpy(scripts_path, user_path);
         strcat(scripts_path, PM3_USER_DIRECTORY);
         strcat(scripts_path, PYTHON_SCRIPTS_SUBDIR);
-//        strcat(scripts_path, PYTHON_LIBRARIES_WILDCARD);
+        // strcat(scripts_path, PYTHON_LIBRARIES_WILDCARD);
         set_python_path(scripts_path);
 
     }
 
     if (exec_path != NULL) {
-        // from the $PREFIX/share/proxmark3/luascripts/ directory
+        // from the $PREFIX/share/proxmark3/pyscripts/ directory
         char scripts_path[strlen(exec_path) + strlen(PM3_SHARE_RELPATH) + strlen(PYTHON_SCRIPTS_SUBDIR) + strlen(PYTHON_LIBRARIES_WILDCARD) + 1];
         strcpy(scripts_path, exec_path);
         strcat(scripts_path, PM3_SHARE_RELPATH);
         strcat(scripts_path, PYTHON_SCRIPTS_SUBDIR);
-//        strcat(scripts_path, PYTHON_LIBRARIES_WILDCARD);
+        // strcat(scripts_path, PYTHON_LIBRARIES_WILDCARD);
         set_python_path(scripts_path);
     }
 }
@@ -219,13 +249,16 @@ static int CmdScriptList(const char *Cmd) {
     CLIParserFree(ctx);
     PrintAndLogEx(NORMAL, "\n" _YELLOW_("[ Lua scripts ]"));
     int ret = searchAndList(LUA_SCRIPTS_SUBDIR, ".lua");
-    if (ret != PM3_SUCCESS)
+    if (ret != PM3_SUCCESS) {
         return ret;
+    }
 
     PrintAndLogEx(NORMAL, "\n" _YELLOW_("[ Cmd scripts ]"));
     ret = searchAndList(CMD_SCRIPTS_SUBDIR, ".cmd");
-    if (ret != PM3_SUCCESS)
+    if (ret != PM3_SUCCESS) {
         return ret;
+    }
+
 #ifdef HAVE_PYTHON
     PrintAndLogEx(NORMAL, "\n" _YELLOW_("[ Python scripts ]"));
     return searchAndList(PYTHON_SCRIPTS_SUBDIR, ".py");
@@ -257,11 +290,11 @@ static int CmdScriptRun(const char *Cmd) {
     };
 
     int fnlen = 0;
-    char filename[128] = {0};
+    char filename[FILE_PATH_SIZE] = {0};
     int arg_len = 0;
-    char arguments[256] = {0};
+    char arguments[1025] = {0};
 
-    sscanf(Cmd, "%127s%n %255[^\n\r]%n", filename, &fnlen, arguments, &arg_len);
+    sscanf(Cmd, "%999s%n %1024[^\n\r]%n", filename, &fnlen, arguments, &arg_len);
 
     // hack
     // since we don't want to use "-f"  for script filename,
@@ -407,17 +440,22 @@ static int CmdScriptRun(const char *Cmd) {
         Py_Initialize();
 #else
         PyConfig py_conf;
-        PyConfig_InitIsolatedConfig(&py_conf);
-        // Despite being isolated we probably want to allow users to use
-        // the Python packages they installed on their user directory as well
-        // as system ones. But it seems isolated mode still enforces them off.
-        py_conf.use_environment = 1;
+        PyStatus status;
+        // We need to use Python mode instead of isolated to avoid breaking stuff.
+        PyConfig_InitPythonConfig(&py_conf);
+        // Let's still make things bit safer by being as close as possible to isolated mode.
+        py_conf.configure_c_stdio = -1;
+        py_conf.faulthandler = 0;
+        py_conf.use_hash_seed = 0;
+        py_conf.install_signal_handlers = 0;
+        py_conf.parse_argv = 0;
         py_conf.user_site_directory = 1;
+        py_conf.use_environment = 0;
 #endif
 
         //int argc, char ** argv
-        char *argv[128];
-        argv[0] = filename;
+        char *argv[FILE_PATH_SIZE];
+        argv[0] = script_path;
         int argc = split(arguments, &argv[1]);
 #if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION < 10
         wchar_t *py_args[argc + 1];
@@ -428,11 +466,38 @@ static int CmdScriptRun(const char *Cmd) {
         PySys_SetArgv(argc + 1, py_args);
 #else
         // The following line will implicitly pre-initialize Python
-        PyConfig_SetBytesArgv(&py_conf, argc + 1, argv);
-        // This is required by Proxspace to work with an isolated Python configuration
-        PyConfig_SetBytesString(&py_conf, &py_conf.home, getenv("PYTHONHOME"));
+        status = PyConfig_SetBytesArgv(&py_conf, argc + 1, argv);
+        if (PyStatus_Exception(status)) {
+            goto pyexception;
+        }
+        // We disallowed in py_conf environment variables interfering with python interpreter's behavior.
+        // Let's manually enable the ones we truly need.
+        const char *virtual_env = getenv("VIRTUAL_ENV");
+        if (virtual_env != NULL) {
+            size_t length = strlen(virtual_env) + strlen("/bin/python3") + 1;
+            char python_executable_path[length];
+            snprintf(python_executable_path, length, "%s/bin/python3", virtual_env);
+            status = PyConfig_SetBytesString(&py_conf, &py_conf.executable, python_executable_path);
+            if (PyStatus_Exception(status)) {
+                goto pyexception;
+            }
+        } else {
+            // This is required by Proxspace to work with an isolated Python configuration
+            status = PyConfig_SetBytesString(&py_conf, &py_conf.home, getenv("PYTHONHOME"));
+            if (PyStatus_Exception(status)) {
+                goto pyexception;
+            }
+        }
+        // This is required for allowing `import pm3` in python scripts
+        status = PyConfig_SetBytesString(&py_conf, &py_conf.pythonpath_env, getenv("PYTHONPATH"));
+        if (PyStatus_Exception(status)) {
+            goto pyexception;
+        }
 
-        Py_InitializeFromConfig(&py_conf);
+        status = Py_InitializeFromConfig(&py_conf);
+        if (PyStatus_Exception(status)) {
+            goto pyexception;
+        }
 
         // clean up
         PyConfig_Clear(&py_conf);
@@ -466,6 +531,18 @@ static int CmdScriptRun(const char *Cmd) {
             PrintAndLogEx(SUCCESS, "\nfinished " _YELLOW_("%s"), filename);
             return PM3_SUCCESS;
         }
+
+#if PY_MAJOR_VERSION == 3 && PY_MINOR_VERSION >= 10
+pyexception:
+        PyConfig_Clear(&py_conf);
+        if (PyStatus_IsExit(status)) {
+            PrintAndLogEx(WARNING, "\nPython initialization failed with exitcode=%i", status.exitcode);
+        }
+        if (PyStatus_IsError(status)) {
+            PrintAndLogEx(WARNING, "\nPython initialization failed with exception: %s", status.err_msg);
+        }
+        return PM3_ESOFT;
+#endif
     }
 #endif
 

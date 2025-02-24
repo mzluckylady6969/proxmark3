@@ -42,12 +42,12 @@ static bool is_last_record(uint16_t tracepos, uint16_t traceLen) {
 }
 
 static bool next_record_is_response(uint16_t tracepos, uint8_t *trace) {
-    tracelog_hdr_t *hdr = (tracelog_hdr_t *)(trace + tracepos);
+    const tracelog_hdr_t *hdr = (tracelog_hdr_t *)(trace + tracepos);
     return (hdr->isResponse);
 }
 
 static bool merge_topaz_reader_frames(uint32_t timestamp, uint32_t *duration, uint16_t *tracepos, uint16_t traceLen,
-                                      uint8_t *trace, uint8_t *frame, uint8_t *topaz_reader_command, uint16_t *data_len) {
+                                      uint8_t *trace, const uint8_t *frame, uint8_t *topaz_reader_command, uint16_t *data_len) {
 
 #define MAX_TOPAZ_READER_CMD_LEN 16
 
@@ -59,7 +59,7 @@ static bool merge_topaz_reader_frames(uint32_t timestamp, uint32_t *duration, ui
 
     while (!is_last_record(*tracepos, traceLen) && !next_record_is_response(*tracepos, trace)) {
 
-        tracelog_hdr_t *hdr = (tracelog_hdr_t *)(trace + *tracepos);
+        const tracelog_hdr_t *hdr = (tracelog_hdr_t *)(trace + *tracepos);
 
         *tracepos += TRACELOG_HDR_LEN + hdr->data_len;
 
@@ -89,6 +89,23 @@ static uint8_t calc_pos(const uint8_t *d) {
         pos++;
 
     return pos;
+}
+
+// Copy an existing buffer into client trace buffer
+// I think this is cleaner than further globalizing gs_trace, and may lend itself to more modularity later?
+bool ImportTraceBuffer(const uint8_t *trace_src, uint16_t trace_len) {
+    if (trace_len == 0 || trace_src == NULL) return (false);
+    if (gs_trace) {
+        free(gs_trace);
+        gs_traceLen = 0;
+    }
+    gs_trace = calloc(trace_len, sizeof(uint8_t));
+    if (gs_trace == NULL) {
+        return (false);
+    }
+    memcpy(gs_trace, trace_src, trace_len);
+    gs_traceLen = trace_len;
+    return (true);
 }
 
 static uint8_t extract_uid[10] = {0};
@@ -129,7 +146,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
     uint16_t data_len = hdr->data_len;
     uint8_t *frame = hdr->frame;
 
-    // sanity check tracking position is less then available trace size
+    // sanity check tracking position is less than available trace size
     if (tracepos + TRACELOG_HDR_LEN + data_len + TRACELOG_PARITY_LEN(hdr) > traceLen) {
         PrintAndLogEx(DEBUG, "trace pos offset %"PRIu64 " larger than reported tracelen %u",
                       tracepos + TRACELOG_HDR_LEN + data_len + TRACELOG_PARITY_LEN(hdr),
@@ -147,6 +164,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
     }
 
     // extract MFC
+    /*
     switch (frame[0]) {
         case MIFARE_AUTH_KEYA: {
             if (data_len > 3) {
@@ -159,9 +177,11 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
             break;
         }
     }
+    */
 
-    // extract MFU-C
+    // extract MFU-C KEY when written.
     switch (frame[0]) {
+
         case MIFARE_ULC_AUTH_1: {
             if (data_len != 4) {
                 break;
@@ -178,7 +198,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
                 break;
             }
 
-            PrintAndLogEx(INFO, "MFU-C AUTH");
+            PrintAndLogEx(INFO, "Found a MFU-C authententication attempt");
             PrintAndLogEx(INFO, "3DES %s " NOLF, sprint_hex_inrow(next_hdr->frame + 1, 8));
 
             next_hdr = (tracelog_hdr_t *)(trace + tracepos);
@@ -186,6 +206,8 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
 
             if (next_hdr->frame[0] == MIFARE_ULC_AUTH_2 && next_hdr->data_len == 19) {
                 PrintAndLogEx(NORMAL, "%s", sprint_hex_inrow(next_hdr->frame + 1, 16));
+            } else {
+                PrintAndLogEx(NORMAL, "( " _RED_("partial") " )");
             }
 
             return tracepos;
@@ -201,7 +223,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
         switch (c) {
             case ICLASS_CMD_SELECT: {
 
-                tracelog_hdr_t *next_hdr = (tracelog_hdr_t *)(trace + tracepos);
+                const tracelog_hdr_t *next_hdr = (tracelog_hdr_t *)(trace + tracepos);
                 tracepos += SKIP_TO_NEXT(next_hdr);
                 if (next_hdr->data_len != 10) {
                     break;
@@ -214,7 +236,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
 
                 // get epurse
                 if (frame[1] == 2 && data_len == 2) {
-                    tracelog_hdr_t *next_hdr = (tracelog_hdr_t *)(trace + tracepos);
+                    const tracelog_hdr_t *next_hdr = (tracelog_hdr_t *)(trace + tracepos);
                     tracepos += SKIP_TO_NEXT(next_hdr);
                     if (next_hdr->data_len < 8) {
                         break;
@@ -306,7 +328,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
             case MFDES_AUTHENTICATE: {
 
                 // Assume wrapped or unwrapped
-                PrintAndLogEx(INFO, "AUTH NATIVE (keyNo %d)", frame[pos + long_jmp]);
+                PrintAndLogEx(INFO, "Found a MFDES Auth NATIVE (keyNo %d)", frame[pos + long_jmp]);
                 if (next_record_is_response(tracepos, trace) == false) {
                     break;
                 }
@@ -331,7 +353,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
             }
             case MFDES_AUTHENTICATE_ISO: {
                 // Assume wrapped or unwrapped
-                PrintAndLogEx(INFO, "AUTH ISO (keyNo %d)", frame[pos + long_jmp]);
+                PrintAndLogEx(INFO, "Found a MFDES Auth ISO (keyNo %d)", frame[pos + long_jmp]);
                 if (next_record_is_response(tracepos, trace) == false) {
                     break;
                 }
@@ -362,7 +384,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
             }
             case MFDES_AUTHENTICATE_AES: {
                 // Assume wrapped or unwrapped
-                PrintAndLogEx(INFO, "AUTH AES (keyNo %d)", frame[pos + long_jmp]);
+                PrintAndLogEx(INFO, "Found a MFDES Auth AES (keyNo %d)", frame[pos + long_jmp]);
                 if (next_record_is_response(tracepos, trace)) {
                     break;
                 }
@@ -386,7 +408,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
                 return tracepos;
             }
             case MFDES_AUTHENTICATE_EV2F: {
-                PrintAndLogEx(INFO, "AUTH EV2 First");
+                PrintAndLogEx(INFO, "Found a MFDES Auth EV2 First");
                 uint16_t tmp = extractChall_ev2(tracepos, trace, pos, long_jmp);
                 if (tmp == 0)
                     break;
@@ -395,7 +417,7 @@ static uint16_t extractChallenges(uint16_t tracepos, uint16_t traceLen, uint8_t 
 
             }
             case MFDES_AUTHENTICATE_EV2NF: {
-                PrintAndLogEx(INFO, "AUTH EV2 Non First");
+                PrintAndLogEx(INFO, "Found a MFDES Auth EV2 Non First");
                 uint16_t tmp = extractChall_ev2(tracepos, trace, pos, long_jmp);
                 if (tmp == 0)
                     break;
@@ -484,9 +506,7 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
 
     uint32_t end_of_transmission_timestamp = 0;
     uint8_t topaz_reader_command[9];
-    char explanation[40] = {0};
-    uint8_t mfData[32] = {0};
-    size_t mfDataLen = 0;
+    char explanation[60] = {0};
     tracelog_hdr_t *first_hdr = (tracelog_hdr_t *)(trace);
     tracelog_hdr_t *hdr = (tracelog_hdr_t *)(trace + tracepos);
 
@@ -535,6 +555,7 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
                 crcStatus = !felica_CRC_check(frame + 2, data_len - 4);
                 break;
             case PROTO_MIFARE:
+            case PROTO_MFPLUS:
                 crcStatus = mifare_CRC_check(hdr->isResponse, frame, data_len);
                 break;
             case ISO_14443A:
@@ -572,8 +593,12 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
     //1 CRC-command, CRC ok
     //2 Not crc-command
 
-    //--- Draw the data column
-    char line[18][160] = {{0}};
+    // Draw the data column
+#define TRACE_MAX_LINES      36
+    // number of hex bytes to be printed per row  (16 data + 2 crc)
+#define TRACE_MAX_HEX_BYTES  18
+
+    char line[TRACE_MAX_LINES][160] = {{0}};
 
     if (data_len == 0) {
         if (protocol == ICLASS && duration == 2048) {
@@ -584,9 +609,10 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
             snprintf(line[0], sizeof(line[0]), "<empty trace - possible error>");
         }
     }
-    uint8_t partialbytebuff = 0;
+
+//    uint8_t partialbytebuff = 0;
     uint8_t offset = 0;
-    for (int j = 0; j < data_len && j / 18 < 18; j++) {
+    for (int j = 0; j < data_len && (j / TRACE_MAX_HEX_BYTES) < TRACE_MAX_HEX_BYTES; j++) {
         uint8_t parityBits = parityBytes[j >> 3];
         if (protocol != LEGIC
                 && protocol != ISO_14443B
@@ -600,44 +626,59 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
                 && protocol != FELICA
                 && protocol != LTO
                 && protocol != PROTO_CRYPTORF
-                && (hdr->isResponse || protocol == ISO_14443A || protocol == PROTO_MIFARE || protocol == SEOS)
+                && (hdr->isResponse || protocol == ISO_14443A || protocol == PROTO_MIFARE || protocol == PROTO_MFPLUS || protocol == SEOS)
                 && (oddparity8(frame[j]) != ((parityBits >> (7 - (j & 0x0007))) & 0x01))) {
 
-            snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02x! ", frame[j]);
+            snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02X! ", frame[j]);
+
         } else if (protocol == ICLASS  && hdr->isResponse == false) {
+
             uint8_t parity = 0;
             for (int i = 0; i < 6; i++) {
                 parity ^= ((frame[0] >> i) & 1);
             }
+
             if (parity == ((frame[0] >> 7) & 1)) {
-                snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02x  ", frame[j]);
+                snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02X  ", frame[j]);
             } else {
-                snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02x! ", frame[j]);
+                snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02X! ", frame[j]);
             }
 
-        } else if (((protocol == PROTO_HITAG1) || (protocol == PROTO_HITAG2) || (protocol == PROTO_HITAGS)) && (parityBytes[0] > 0)) {
-            // handle partial bytes
-            uint8_t nbits = parityBytes[0];
+        } else if (((protocol == PROTO_HITAG1) || (protocol == PROTO_HITAG2) || (protocol == PROTO_HITAGS))) {
+
             if (j == 0) {
-                partialbytebuff = frame[0] << nbits;
-                snprintf(line[0], 120, "%02x(%i) ", frame[0] >> (8 - nbits), nbits);
-                offset = 2;
+
+                // handle partial bytes.  The parity array[0] is used to store number of left over bits from NBYTES
+                // This part prints the number of bits in the trace entry for hitag.
+                uint8_t nbits = parityBytes[0];
+
+                // only apply this to lesser than one byte
+                if (data_len == 1 && nbits != 0) {
+
+                    snprintf(line[0], 120, "%2u: %02X  ", nbits, frame[0] >> (8 - nbits));
+
+                } else {
+                    if (nbits == 0) {
+                        snprintf(line[0], 120, "%2u: %02X  ", (uint16_t)(data_len * 8), frame[0]);
+                    } else {
+                        snprintf(line[0], 120, "%2u: %02X  ", (uint16_t)(((data_len - 1) * 8) + nbits), frame[0]);
+                    }
+                }
+                offset = 4;
+
             } else {
-                uint8_t byte = partialbytebuff | (frame[j] >> (8 - nbits));
-                partialbytebuff = frame[j] << nbits;
-                snprintf(line[j / 18] + ((j % 18) * 4) + offset, 120, "%02x  ", byte);
+                snprintf(line[j / 18] + ((j % 18) * 4) + offset, 120, "%02X  ", frame[j]);
             }
+
         } else {
-            snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02x  ", frame[j]);
+            snprintf(line[j / 18] + ((j % 18) * 4), 120, "%02X  ", frame[j]);
         }
 
     }
 
-
-    uint8_t crc_format_string_offset = 0;
     if (markCRCBytes && data_len > 2) {
-        //CRC-command
-        if (((protocol == PROTO_HITAG1) || (protocol == PROTO_HITAGS)) && (data_len > 1)) {
+        // CRC-command
+        if (((protocol == PROTO_HITAG1) || (protocol == PROTO_HITAGS))) {
             // Note that UID REQUEST response has no CRC, but we don't know
             // if the response we see is a UID
             char *pos1 = line[(data_len - 1) / 18] + (((data_len - 1) % 18) * 4) + offset - 1;
@@ -649,36 +690,43 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
 
             if (crcStatus == 0 || crcStatus == 1) {
 
-                char *pos1 = line[(data_len - 2) / 18];
-                pos1 += (((data_len - 2) % 18) * 4) - 1;
+                char *pos1 = line[(data_len - 2) / TRACE_MAX_HEX_BYTES];
+                int delta = (data_len - 2) % TRACE_MAX_HEX_BYTES ? 1 : 0;
+                pos1 += (((data_len - 2) % TRACE_MAX_HEX_BYTES) * 4) - delta;
 
-                (*(pos1 + 6 + 1)) = '\0';
+                (*(pos1 + 6 + delta)) = '\0';
 
-                char *cb_str = str_dup(pos1 + 1);
+                char *cb_str = str_dup(pos1 + delta);
 
-                if (hdr->isResponse) {
-                    if (g_session.supports_colors) {
-                        if (crcStatus == 0) {
-                            snprintf(pos1, 24, " " _RED_("%s") " ", cb_str);
-                        } else {
-                            snprintf(pos1, 24, " " _GREEN_("%s") " ", cb_str);
-                        }
-                        crc_format_string_offset = 9;
+                if (g_session.supports_colors) {
+                    if (crcStatus == 0) {
+                        snprintf(pos1, 24, AEND " " _RED_("%s"), cb_str);
                     } else {
-                        snprintf(pos1, 9, "[%s]", cb_str);
+                        snprintf(pos1, 24, AEND " " _GREEN_("%s"), cb_str);
                     }
                 } else {
+                    snprintf(pos1, 9, "[%s]", cb_str);
+                }
+
+                // odd case of second crc byte is alone in a new line
+                if (strlen(cb_str) < 5) {
+
+                    free(cb_str);
+
+                    pos1 = line[((data_len - 2) / TRACE_MAX_HEX_BYTES) + 1];
+                    cb_str = str_dup(pos1);
+
                     if (g_session.supports_colors) {
                         if (crcStatus == 0) {
-                            snprintf(pos1, 24, AEND " " _RED_("%s") " ", cb_str);
+                            snprintf(pos1, 24, _RED_("%s"), cb_str);
                         } else {
-                            snprintf(pos1, 24, AEND " " _GREEN_("%s") " ", cb_str);
+                            snprintf(pos1, 24, _GREEN_("%s"), cb_str);
                         }
-                        crc_format_string_offset = 13;
                     } else {
                         snprintf(pos1, 9, "[%s]", cb_str);
                     }
                 }
+
                 free(cb_str);
             }
         }
@@ -691,6 +739,7 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
     // mark short bytes (less than 8 Bit + Parity)
     if (protocol == ISO_14443A ||
             protocol == PROTO_MIFARE ||
+            protocol == PROTO_MFPLUS ||
             protocol == THINFILM) {
 
         // approximated with 128 * (9 * data_len);
@@ -727,23 +776,26 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
 
     end_of_transmission_timestamp = hdr->timestamp + duration;
 
-    if (prev_eot)
+    if (prev_eot) {
         *prev_eot = end_of_transmission_timestamp;
+    }
 
     // Always annotate these protocols both reader/tag messages
     switch (protocol) {
         case ISO_14443A:
         case ISO_7816_4:
+        case PROTO_FMCOS20:
             annotateIso14443a(explanation, sizeof(explanation), frame, data_len, hdr->isResponse);
             break;
         case PROTO_MIFARE:
+        case PROTO_MFPLUS:
             annotateMifare(explanation, sizeof(explanation), frame, data_len, parityBytes, TRACELOG_PARITY_LEN(hdr), hdr->isResponse);
             break;
         case PROTO_HITAG1:
             annotateHitag1(explanation, sizeof(explanation), frame, data_len, hdr->isResponse);
             break;
         case PROTO_HITAG2:
-            annotateHitag2(explanation, sizeof(explanation), frame, data_len, hdr->isResponse);
+            annotateHitag2(explanation, sizeof(explanation), frame, data_len, parityBytes[0], hdr->isResponse, mfDicKeys, mfDicKeysCount, false);
             break;
         case PROTO_HITAGS:
             annotateHitagS(explanation, sizeof(explanation), frame, data_len, hdr->isResponse);
@@ -756,13 +808,15 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
     }
 
     if (hdr->isResponse == false) {
-
         switch (protocol) {
             case LEGIC:
                 annotateLegic(explanation, sizeof(explanation), frame, data_len);
                 break;
             case MFDES:
                 annotateMfDesfire(explanation, sizeof(explanation), frame, data_len);
+                break;
+            case PROTO_MFPLUS:
+                annotateMfPlus(explanation, sizeof(explanation), frame, data_len);
                 break;
             case ISO_14443B:
                 annotateIso14443b(explanation, sizeof(explanation), frame, data_len);
@@ -788,14 +842,24 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
             case SEOS:
                 annotateSeos(explanation, sizeof(explanation), frame, data_len);
                 break;
+            case PROTO_FMCOS20:
+                annotateFMCOS20(explanation, sizeof(explanation), frame, data_len);
+                break;
             default:
                 break;
         }
     }
 
-    int num_lines = MIN((data_len - 1) / 18 + 1, 18);
+    int str_padder = 72;
+    int num_lines = MIN((data_len - 1) / TRACE_MAX_HEX_BYTES + 1, TRACE_MAX_HEX_BYTES);
+
     for (int j = 0; j < num_lines ; j++) {
+
+        bool last_line = (j == num_lines - 1);
+        str_padder = 72;
+
         if (j == 0) {
+
 
             uint32_t time1 = hdr->timestamp - first_hdr->timestamp;
             uint32_t time2 = end_of_transmission_timestamp - first_hdr->timestamp;
@@ -804,25 +868,30 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
                 time2 = duration;
             }
 
+            // ansi codes addes extra chars that needs to be taken in consideration.
+            if (last_line && (memcmp(crc, "\x20\x20\x20\x20", 4) != 0) && g_session.supports_colors && markCRCBytes) {
+                str_padder = 85;
+            }
+
             if (hdr->isResponse) {
                 // tag row
                 if (use_us) {
                     PrintAndLogEx(NORMAL, " %10.1f | %10.1f | Tag |%-*s | %s| %s",
                                   (float)time1 / 13.56,
                                   (float)time2 / 13.56,
-                                  72 + crc_format_string_offset,
+                                  str_padder,
                                   line[j],
-                                  (j == num_lines - 1) ? crc : "    ",
-                                  (j == num_lines - 1) ? explanation : ""
+                                  (last_line) ? crc : "    ",
+                                  (last_line) ? explanation : ""
                                  );
                 } else {
                     PrintAndLogEx(NORMAL, " %10u | %10u | Tag |%-*s | %s| %s",
                                   time1,
                                   time2,
-                                  72 + crc_format_string_offset,
+                                  str_padder,
                                   line[j],
-                                  (j == num_lines - 1) ? crc : "    ",
-                                  (j == num_lines - 1) ? explanation : ""
+                                  (last_line) ? crc : "    ",
+                                  (last_line) ? explanation : ""
                                  );
                 }
             } else {
@@ -832,54 +901,144 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
                                   _YELLOW_(" %10.1f") " | " _YELLOW_("%10.1f") " | " _YELLOW_("Rdr") " |" _YELLOW_("%-*s")" | " _YELLOW_("%s") "| " _YELLOW_("%s"),
                                   (float)time1 / 13.56,
                                   (float)time2 / 13.56,
-                                  72 + crc_format_string_offset,
+                                  str_padder,
                                   line[j],
-                                  (j == num_lines - 1) ? crc : "    ",
-                                  (j == num_lines - 1) ? explanation : ""
+                                  (last_line) ? crc : "    ",
+                                  (last_line) ? explanation : ""
                                  );
                 } else {
                     PrintAndLogEx(NORMAL,
                                   _YELLOW_(" %10u") " | " _YELLOW_("%10u") " | " _YELLOW_("Rdr") " |" _YELLOW_("%-*s")" | " _YELLOW_("%s") "| " _YELLOW_("%s"),
                                   time1,
                                   time2,
-                                  72 + crc_format_string_offset,
+                                  str_padder,
                                   line[j],
-                                  (j == num_lines - 1) ? crc : "    ",
-                                  (j == num_lines - 1) ? explanation : ""
+                                  (last_line) ? crc : "    ",
+                                  (last_line) ? explanation : ""
                                  );
                 }
-
             }
 
         } else {
+
+
+            if (last_line && (memcmp(crc, "\x20\x20\x20\x20", 4) != 0) && g_session.supports_colors && markCRCBytes) {
+                str_padder = 85;
+                // odd case of multiline,  and last single byte on empty row has been colorised...
+                if (strlen(line[j]) < 14) {
+                    str_padder = 81;
+                }
+            }
+
             if (hdr->isResponse) {
                 PrintAndLogEx(NORMAL, "            |            |     |%-*s | %s| %s",
-                              72 + crc_format_string_offset,
+                              str_padder,
                               line[j],
-                              (j == num_lines - 1) ? crc : "    ",
-                              (j == num_lines - 1) ? explanation : ""
+                              last_line ? crc : "    ",
+                              last_line ? explanation : ""
                              );
             } else {
                 PrintAndLogEx(NORMAL, "            |            |     |" _YELLOW_("%-*s")" | " _YELLOW_("%s") "| " _YELLOW_("%s"),
-                              72 + crc_format_string_offset,
+                              str_padder,
                               line[j],
-                              (j == num_lines - 1) ? crc : "    ",
-                              (j == num_lines - 1) ? explanation : ""
+                              last_line ? crc : "    ",
+                              last_line ? explanation : ""
                              );
+            }
+
+        }
+    }
+
+    if (protocol == PROTO_MIFARE || protocol == PROTO_MFPLUS) {
+        uint8_t mfData[32] = {0};
+        size_t mfDataLen = 0;
+        if (DecodeMifareData(frame, data_len, parityBytes, hdr->isResponse, mfData, &mfDataLen, mfDicKeys, mfDicKeysCount)) {
+            memset(explanation, 0x00, sizeof(explanation));
+
+            if (protocol == PROTO_MFPLUS) {
+                annotateMfPlus(explanation, sizeof(explanation), mfData, mfDataLen);
+            } else {
+                annotateIso14443a(explanation, sizeof(explanation), mfData, mfDataLen, hdr->isResponse);
+            }
+            uint8_t crcc = iso14443A_CRC_check(hdr->isResponse, mfData, mfDataLen);
+
+            // iceman: colorise crc bytes here will need a refactor of code from above.
+            for (int j = 0; j < mfDataLen; j += TRACE_MAX_HEX_BYTES) {
+
+                int plen = MIN((mfDataLen - j), TRACE_MAX_HEX_BYTES);
+
+                if (hdr->isResponse) {
+                    PrintAndLogEx(NORMAL, "            |            |  *  |%-*s | %-4s| %s",
+                                  str_padder,
+                                  sprint_hex_inrow_spaces(mfData + j, plen, 2),
+                                  (crcc == 0 ? _RED_(" !! ") : (crcc == 1 ? _GREEN_(" ok ") : "    ")),
+                                  explanation);
+                } else {
+                    PrintAndLogEx(NORMAL, "            |            |  *  |" _YELLOW_("%-*s")" | " _YELLOW_("%s") "| " _YELLOW_("%s"),
+                                  str_padder,
+                                  sprint_hex_inrow_spaces(mfData + j, plen, 2),
+                                  (crcc == 0 ? _RED_(" !! ") : (crcc == 1 ? _GREEN_(" ok ") : "    ")),
+                                  explanation);
+                }
             }
         }
     }
 
-    if (protocol == PROTO_MIFARE) {
-        if (DecodeMifareData(frame, data_len, parityBytes, hdr->isResponse, mfData, &mfDataLen, mfDicKeys, mfDicKeysCount)) {
+    if (protocol == PROTO_HITAG2) {
+
+        uint8_t ht2plain[9] = {0};
+        uint8_t n = 0;
+        if (hitag2_get_plain(ht2plain, &n)) {
+
             memset(explanation, 0x00, sizeof(explanation));
-            annotateIso14443a(explanation, sizeof(explanation), mfData, mfDataLen, hdr->isResponse);
-            uint8_t crcc = iso14443A_CRC_check(hdr->isResponse, mfData, mfDataLen);
-            PrintAndLogEx(NORMAL, "            |            |  *  |%-*s | %-4s| %s",
-                          72 + crc_format_string_offset,
-                          sprint_hex_inrow_spaces(mfData, mfDataLen, 2),
-                          (crcc == 0 ? _RED_(" !! ") : (crcc == 1 ? _GREEN_(" ok ") : "    ")),
-                          explanation);
+
+            // handle partial bytes.  The parity array[0] is used to store number of left over bits from NBYTES
+            // This part prints the number of bits in the trace entry for hitag.
+            uint8_t nbits = parityBytes[0];
+            annotateHitag2(explanation, sizeof(explanation), ht2plain, n, nbits, hdr->isResponse, NULL, 0, true);
+
+            // iceman: colorise crc bytes here will need a refactor of code from above.
+            for (int j = 0; j < n && (j / TRACE_MAX_HEX_BYTES) < TRACE_MAX_HEX_BYTES; j++) {
+
+
+                if (j == 0) {
+
+                    // only apply this to lesser than one byte
+                    if (n == 1) {
+                        snprintf(line[0], 120, "%2u: %02X  ", nbits, ht2plain[0] >> (8 - nbits));
+                    } else {
+
+                        if (nbits == 0) {
+                            snprintf(line[0], 120, "%2u: %02X  ", (uint16_t)(n * 8), ht2plain[0]);
+                        } else {
+                            snprintf(line[0], 120, "%2u: %02X  ", (uint16_t)(((n - 1) * 8) + nbits), ht2plain[0]);
+                        }
+                    }
+                    offset = 4;
+
+                } else {
+                    snprintf(line[j / 18] + ((j % 18) * 4) + offset, 120, "%02X  ", ht2plain[j]);
+                }
+            }
+
+            num_lines = MIN((n - 1) / TRACE_MAX_HEX_BYTES + 1, TRACE_MAX_HEX_BYTES);
+
+            for (int j = 0; j < num_lines ; j++) {
+                if (hdr->isResponse) {
+                    PrintAndLogEx(NORMAL, "            |            |  *  |%-*s | %-4s| %s",
+                                  str_padder,
+                                  line[j],
+                                  "    ",
+                                  explanation);
+                } else {
+                    PrintAndLogEx(NORMAL, "            |            |  *  |" _YELLOW_("%-*s")" | " _YELLOW_("%s") "| " _YELLOW_("%s"),
+                                  str_padder,
+                                  line[j],
+                                  "    ",
+                                  explanation);
+                }
+
+            }
         }
     }
 
@@ -889,7 +1048,7 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
 
     if (showWaitCycles && hdr->isResponse == false && next_record_is_response(tracepos, trace)) {
 
-        tracelog_hdr_t *next_hdr = (tracelog_hdr_t *)(trace + tracepos);
+        const tracelog_hdr_t *next_hdr = (tracelog_hdr_t *)(trace + tracepos);
 
         uint32_t time1 = end_of_transmission_timestamp - first_hdr->timestamp;
         uint32_t time2 = next_hdr->timestamp - first_hdr->timestamp;
@@ -919,13 +1078,14 @@ static uint16_t printTraceLine(uint16_t tracepos, uint16_t traceLen, uint8_t *tr
 static int download_trace(void) {
 
     if (IfPm3Present() == false) {
-        PrintAndLogEx(FAILED, "You requested a trace upload in offline mode, consider using parameter '-1' for working from Tracebuffer");
+        PrintAndLogEx(FAILED, "You requested a trace upload in offline mode, consider using parameter `" _YELLOW_("-1") "` for working from Tracebuffer");
         return PM3_EINVARG;
     }
 
     // reserve some space.
-    if (gs_trace)
+    if (gs_trace) {
         free(gs_trace);
+    }
 
     gs_traceLen = 0;
 
@@ -935,18 +1095,18 @@ static int download_trace(void) {
         return PM3_EMALLOC;
     }
 
-    PrintAndLogEx(INFO, "downloading tracelog data from device");
+    PrintAndLogEx(DEBUG, "downloading tracelog data from device");
 
     // Query for the size of the trace,  downloading PM3_CMD_DATA_SIZE
-    PacketResponseNG response;
-    if (!GetFromDevice(BIG_BUF, gs_trace, PM3_CMD_DATA_SIZE, 0, NULL, 0, &response, 4000, true)) {
+    PacketResponseNG resp;
+    if (!GetFromDevice(BIG_BUF, gs_trace, PM3_CMD_DATA_SIZE, 0, NULL, 0, &resp, 4000, true)) {
         PrintAndLogEx(WARNING, "timeout while waiting for reply.");
         free(gs_trace);
         gs_trace = NULL;
         return PM3_ETIMEOUT;
     }
 
-    gs_traceLen = response.oldarg[2];
+    gs_traceLen = resp.oldarg[2];
 
     // if tracelog buffer was larger and we need to download more.
     if (gs_traceLen > PM3_CMD_DATA_SIZE) {
@@ -1002,11 +1162,11 @@ static int CmdTraceExtract(const char *Cmd) {
         download_trace();
     } else if (gs_traceLen == 0) {
         PrintAndLogEx(FAILED, "You requested a trace list in offline mode but there is no trace.");
-        PrintAndLogEx(FAILED, "Consider using " _YELLOW_("`trace load`") " or removing parameter " _YELLOW_("`-1`"));
+        PrintAndLogEx(FAILED, "Consider using `" _YELLOW_("trace load") "` or removing parameter `" _YELLOW_("-1") "`");
         return PM3_EINVARG;
     }
 
-    PrintAndLogEx(SUCCESS, "Recorded activity (trace len = " _YELLOW_("%u") " bytes)", gs_traceLen);
+    PrintAndLogEx(SUCCESS, "Recorded activity ( " _YELLOW_("%u") " bytes )", gs_traceLen);
     if (gs_traceLen == 0) {
         return PM3_SUCCESS;
     }
@@ -1016,10 +1176,10 @@ static int CmdTraceExtract(const char *Cmd) {
     while (tracepos < gs_traceLen) {
         tracepos = extractChallenges(tracepos, gs_traceLen, gs_trace);
 
-        if (kbd_enter_pressed())
+        if (kbd_enter_pressed()) {
             break;
+        }
     }
-
     return PM3_SUCCESS;
 }
 
@@ -1045,8 +1205,9 @@ static int CmdTraceLoad(const char *Cmd) {
     CLIParserFree(ctx);
 
     if (gs_trace) {
-        free(gs_trace);
+        free(gs_trace); // maybe better to not clobber this until we have successful load?
         gs_trace = NULL;
+        gs_traceLen = 0;
     }
 
     size_t len = 0;
@@ -1128,7 +1289,7 @@ int CmdTraceListAlias(const char *Cmd, const char *alias, const char *protocol) 
     CLIParserFree(ctx);
 
     char args[128] = {0};
-    snprintf(args, sizeof(args), "-c -t %s ", protocol);
+    snprintf(args, sizeof(args), "-t %s ", protocol);
     strncat(args, Cmd, sizeof(args) - strlen(args) - 1);
     return CmdTraceList(args);
 }
@@ -1147,9 +1308,9 @@ int CmdTraceList(const char *Cmd) {
                   "trace list -t cryptorf -> interpret as " _YELLOW_("CryptoRF") "\n\n"
                   "trace list -t des      -> interpret as " _YELLOW_("MIFARE DESFire") "\n"
                   "trace list -t felica   -> interpret as " _YELLOW_("ISO18092 / FeliCa") "\n"
-                  "trace list -t hitag1   -> interpret as " _YELLOW_("Hitag1") "\n"
-                  "trace list -t hitag2   -> interpret as " _YELLOW_("Hitag2") "\n"
-                  "trace list -t hitags   -> interpret as " _YELLOW_("HitagS") "\n"
+                  "trace list -t hitag1   -> interpret as " _YELLOW_("Hitag 1") "\n"
+                  "trace list -t hitag2   -> interpret as " _YELLOW_("Hitag 2") "\n"
+                  "trace list -t hitags   -> interpret as " _YELLOW_("Hitag S") "\n"
                   "trace list -t iclass   -> interpret as " _YELLOW_("iCLASS") "\n"
                   "trace list -t legic    -> interpret as " _YELLOW_("LEGIC") "\n"
                   "trace list -t lto      -> interpret as " _YELLOW_("LTO-CM") "\n"
@@ -1157,6 +1318,8 @@ int CmdTraceList(const char *Cmd) {
                   "trace list -t seos     -> interpret as " _YELLOW_("SEOS") "\n"
                   "trace list -t thinfilm -> interpret as " _YELLOW_("Thinfilm") "\n"
                   "trace list -t topaz    -> interpret as " _YELLOW_("Topaz") "\n"
+                  "trace list -t mfp      -> interpret as " _YELLOW_("MIFARE Plus") "\n"
+                  "trace list -t fmcos20  -> interpret as " _YELLOW_("FMCOS 2.0") "\n"
                   "\n"
                   "trace list -t mf -f mfc_default_keys.dic     -> use default dictionary file\n"
                   "trace list -t 14a --frame                    -> show frame delay times\n"
@@ -1223,6 +1386,8 @@ int CmdTraceList(const char *Cmd) {
     else if (strcmp(type, "seos") == 0)     protocol = SEOS;
     else if (strcmp(type, "thinfilm") == 0) protocol = THINFILM;
     else if (strcmp(type, "topaz") == 0)    protocol = TOPAZ;
+    else if (strcmp(type, "mfp") == 0)      protocol = PROTO_MFPLUS;
+    else if (strcmp(type, "fmcos20") == 0)  protocol = PROTO_FMCOS20;
     else if (strcmp(type, "") == 0)         protocol = -1;
     else {
         PrintAndLogEx(FAILED, "Unknown protocol \"%s\"", type);
@@ -1231,13 +1396,19 @@ int CmdTraceList(const char *Cmd) {
 
     if (use_buffer == false) {
         download_trace();
-    } else if (gs_traceLen == 0) {
-        PrintAndLogEx(FAILED, "You requested a trace list in offline mode but there is no trace.");
-        PrintAndLogEx(FAILED, "Consider using " _YELLOW_("`trace load`") " or removing parameter " _YELLOW_("`-1`"));
+    } else if (gs_traceLen == 0 || gs_trace == NULL) {
+
+        if (IfPm3Present() == false) {
+            PrintAndLogEx(FAILED, "You requested a trace list in offline mode but there is no trace.");
+        } else {
+            PrintAndLogEx(FAILED, "You requested a trace list but there is no trace.");
+        }
+
+        PrintAndLogEx(FAILED, "Consider using `" _YELLOW_("trace load") "` or removing parameter `" _YELLOW_("-1") "`");
         return PM3_EINVARG;
     }
 
-    PrintAndLogEx(SUCCESS, "Recorded activity (trace len = " _YELLOW_("%u") " bytes)", gs_traceLen);
+    PrintAndLogEx(SUCCESS,  "Recorded activity ( " _YELLOW_("%u") " bytes )", gs_traceLen);
     if (gs_traceLen == 0) {
         return PM3_SUCCESS;
     }
@@ -1256,12 +1427,12 @@ int CmdTraceList(const char *Cmd) {
     } else {
 
         if (use_relative) {
-            PrintAndLogEx(INFO, _YELLOW_("gap") " = time between transfers. " _YELLOW_("duration") " = duration of data transfer. " _YELLOW_("src") " = source of transfer");
+            PrintAndLogEx(INFO, _YELLOW_("gap") " = time between transfers. " _YELLOW_("duration") " = duration of data transfer. " _YELLOW_("src") " = source of transfer.");
         } else {
-            PrintAndLogEx(INFO, _YELLOW_("start") " = start of start frame " _YELLOW_("end") " = end of frame. " _YELLOW_("src") " = source of transfer");
+            PrintAndLogEx(INFO, _YELLOW_("start") " = start of start frame. " _YELLOW_("end") " = end of frame. " _YELLOW_("src") " = source of transfer.");
         }
 
-        if (protocol == ISO_14443A || protocol == PROTO_MIFARE || protocol == MFDES || protocol == TOPAZ || protocol == LTO) {
+        if (protocol == ISO_14443A || protocol == PROTO_MIFARE || protocol == MFDES || protocol == PROTO_MFPLUS || protocol == TOPAZ || protocol == LTO) {
             if (use_us)
                 PrintAndLogEx(INFO, _YELLOW_("ISO14443A") " - all times are in microseconds");
             else
@@ -1294,10 +1465,15 @@ int CmdTraceList(const char *Cmd) {
         }
 
         if (protocol == ISO_7816_4)
-            PrintAndLogEx(INFO, _YELLOW_("ISO7816-4 / Smartcard") " - Timings N/A");
+            PrintAndLogEx(INFO, _YELLOW_("ISO7816-4 / Smartcard") " - Timings n/a");
 
-        if (protocol == PROTO_HITAG1 || protocol == PROTO_HITAG2 || protocol == PROTO_HITAGS)
-            PrintAndLogEx(INFO, _YELLOW_("Hitag1 / Hitag2 / HitagS") " - Timings in ETU (8us)");
+        if (protocol == PROTO_HITAG1 || protocol == PROTO_HITAG2 || protocol == PROTO_HITAGS) {
+            PrintAndLogEx(INFO, _YELLOW_("Hitag 1 / Hitag 2 / Hitag S") " - Timings in ETU (8us)");
+        }
+
+        if (protocol == PROTO_FMCOS20) {
+            PrintAndLogEx(INFO, _YELLOW_("FMCOS 2.0 / CPU Card") " - Timings n/a");
+        }
 
         if (protocol == FELICA) {
             if (use_us)
@@ -1311,7 +1487,7 @@ int CmdTraceList(const char *Cmd) {
         uint32_t dicKeysCount = 0;
         bool dictionaryLoad = false;
 
-        if (protocol == PROTO_MIFARE) {
+        if (protocol == PROTO_MIFARE || protocol == PROTO_MFPLUS) {
             if (diclen > 0) {
                 uint8_t *keyBlock = NULL;
                 int res = loadFileDICTIONARY_safe(dictionary, (void **) &keyBlock, 6, &dicKeysCount);
@@ -1335,6 +1511,30 @@ int CmdTraceList(const char *Cmd) {
             }
         }
 
+        if (protocol == PROTO_HITAG2) {
+
+            if (strlen(dictionary) == 0) {
+                snprintf(dictionary, sizeof(dictionary), HITAG_DICTIONARY);
+            }
+
+            // load keys
+            uint8_t *keyBlock = NULL;
+            int res = loadFileDICTIONARY_safe(dictionary, (void **) &keyBlock, HITAG_CRYPTOKEY_SIZE, &dicKeysCount);
+            if (res != PM3_SUCCESS || dicKeysCount == 0 || keyBlock == NULL) {
+                PrintAndLogEx(FAILED, "An error occurred while loading the dictionary!");
+            } else {
+                dicKeys = calloc(dicKeysCount, sizeof(uint64_t));
+                for (int i = 0; i < dicKeysCount; i++) {
+                    uint64_t key = bytes_to_num(keyBlock + i * HITAG_CRYPTOKEY_SIZE, HITAG_CRYPTOKEY_SIZE);
+                    memcpy((uint8_t *) &dicKeys[i], &key, sizeof(uint64_t));
+                }
+                dictionaryLoad = true;
+            }
+            if (keyBlock != NULL) {
+                free(keyBlock);
+            }
+        }
+
         PrintAndLogEx(NORMAL, "");
         if (use_relative) {
             PrintAndLogEx(NORMAL, "        Gap |   Duration | Src | Data (! denotes parity error, ' denotes short bytes)                    | CRC | Annotation");
@@ -1344,8 +1544,14 @@ int CmdTraceList(const char *Cmd) {
         PrintAndLogEx(NORMAL, "------------+------------+-----+-------------------------------------------------------------------------+-----+--------------------");
 
         // clean authentication data used with the mifare classic decrypt fct
-        if (protocol == ISO_14443A || protocol == PROTO_MIFARE)
+        if (protocol == ISO_14443A || protocol == PROTO_MIFARE || protocol == PROTO_MFPLUS) {
             ClearAuthData();
+        }
+
+        // reset hitag state  machine
+        if (protocol == PROTO_HITAG1 || protocol == PROTO_HITAG2 || protocol == PROTO_HITAGS) {
+            annotateHitag2_init();
+        }
 
         uint32_t previous_EOT = 0;
         uint32_t *prev_EOT = NULL;
@@ -1356,16 +1562,20 @@ int CmdTraceList(const char *Cmd) {
         while (tracepos < gs_traceLen) {
             tracepos = printTraceLine(tracepos, gs_traceLen, gs_trace, protocol, show_wait_cycles, mark_crc, prev_EOT, use_us, dicKeys, dicKeysCount);
 
-            if (kbd_enter_pressed())
+            if (kbd_enter_pressed()) {
+                PrintAndLogEx(INFO, "User interrupted detected. Aborting");
                 break;
+            }
         }
 
-        if (dictionaryLoad)
+        if (dictionaryLoad)  {
             free((void *) dicKeys);
+        }
     }
 
-    if (show_hex)
+    if (show_hex) {
         PrintAndLogEx(HINT, "syntax to use: " _YELLOW_("`text2pcap -t \"%%S.\" -l 264 -n <input-text-file> <output-pcapng-file>`"));
+    }
 
     return PM3_SUCCESS;
 }

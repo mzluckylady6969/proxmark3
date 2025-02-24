@@ -35,6 +35,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <inttypes.h>
 //#include <mbedtls/aes.h>
 #include "util_posix.h"
 #include "randoms.h"
@@ -169,10 +170,13 @@ static void print_time(uint64_t at) {
     (void)localtime_r(&t, &lt);
 #endif
 
-    char res[32];
-    strftime(res, sizeof(res), "%Y-%m-%d %H:%M:%S", &lt);
-
-    printf("%u  ( '%s' )\n", (unsigned)t, res);
+    char res[70];
+#if defined(__MINGW32__) || defined(__MINGW64__)
+    strftime(res, sizeof(res), "('%Y-%m-%d %H:%M:%S')", &lt);
+#else
+    strftime(res, sizeof(res), "%s ('%Y-%m-%d %H:%M:%S')", &lt);
+#endif
+    printf("%s\n", res);
 }
 
 static void *brute_thread(void *arguments) {
@@ -218,6 +222,8 @@ static void *brute_thread(void *arguments) {
         //make_key_borland_n(i, key, keylen);
 
         uint8_t iv[keylen << 1];
+        memset(iv, 0, sizeof(iv));
+
         uint8_t dec_tag[16] = {0x00};
         uint8_t dec_rdr[32] = {0x00};
 
@@ -378,7 +384,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    uint64_t start_time = atoi(argv[3]);
+    uint64_t start_time = 0;
+    sscanf(argv[3], "%"PRIu64, &start_time);
 
     printf("Crypto algo............ " _GREEN_("%s") "\n", algostr);
     printf("LCR Random generator... " _GREEN_("%s") "\n", generators[g_idx].Name);

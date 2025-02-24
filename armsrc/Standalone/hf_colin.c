@@ -293,7 +293,7 @@ static void ReadLastTagFromFlash(void) {
     rdv40_spiffs_read_as_filetype((char *)HFCOLIN_LASTTAG_SYMLINK, (uint8_t *)mem, len, RDV40_SPIFFS_SAFETY_SAFE);
 
     // copy 64blocks (16bytes) starting w block0, to emulator mem.
-    emlSetMem(mem, 0, 64);
+    emlSetMem_xt(mem, 0, 64, 16);
 
     DbprintfEx(FLAG_NEWLINE, "[OK] Last tag recovered from FLASHMEM set to emulator");
     cjSetCursLeft();
@@ -311,7 +311,7 @@ void WriteTagToFlash(uint32_t uid, size_t size) {
     uint32_t len = size;
     uint8_t data[(size * (16 * 64)) / 1024];
 
-    emlGetMem(data, 0, (size * 64) / 1024);
+    emlGetMem_xt(data, 0, (size * 64) / 1024, MIFARE_BLOCK_SIZE);
 
     char dest[SPIFFS_OBJ_NAME_LEN];
     uint8_t buid[4];
@@ -646,11 +646,11 @@ failtag:
     emlClearMem();
     uint8_t mblock[16];
     for (uint8_t sectorNo = 0; sectorNo < sectorsCnt; sectorNo++) {
-        emlGetMem(mblock, FirstBlockOfSector(sectorNo) + NumBlocksPerSector(sectorNo) - 1, 1);
+        emlGetMem_xt(mblock, FirstBlockOfSector(sectorNo) + NumBlocksPerSector(sectorNo) - 1, 1, MIFARE_BLOCK_SIZE);
         for (uint8_t t = 0; t < 2; t++) {
             memcpy(mblock + t * 10, foundKey[t][sectorNo], 6);
         }
-        emlSetMem(mblock, FirstBlockOfSector(sectorNo) + NumBlocksPerSector(sectorNo) - 1, 1);
+        emlSetMem_xt(mblock, FirstBlockOfSector(sectorNo) + NumBlocksPerSector(sectorNo) - 1, 1, 16);
     }
     cjSetCursLeft();
 
@@ -717,33 +717,10 @@ readysim:
     SpinOff(100);
     LED_C_ON();
 
-    /*
     uint16_t flags = 0;
-    switch (colin_p_card.uidlen) {
-        case 10:
-            flags = FLAG_10B_UID_IN_DATA;
-            break;
-        case 7:
-            flags = FLAG_7B_UID_IN_DATA;
-            break;
-        case 4:
-            flags = FLAG_4B_UID_IN_DATA;
-            break;
-        default:
-            flags = FLAG_UID_IN_EMUL;
-            break;
-    }
-    // Use UID, SAK, ATQA from EMUL, if uid not defined
-    if ((flags & (FLAG_4B_UID_IN_DATA | FLAG_7B_UID_IN_DATA | FLAG_10B_UID_IN_DATA)) == 0) {
-       flags |= FLAG_UID_IN_EMUL;
-    }
-    flags |= FLAG_MF_1K;
-    if ((flags & (FLAG_4B_UID_IN_DATA | FLAG_7B_UID_IN_DATA | FLAG_10B_UID_IN_DATA)) == 0) {
-        flags |= FLAG_UID_IN_EMUL;
-     }
-    flags = 0x10;
-    */
-    uint16_t flags = FLAG_UID_IN_EMUL;
+//    FLAG_SET_UID_IN_DATA(flags, colin_p_card.uidlen);
+    FLAG_SET_UID_IN_EMUL(flags);
+    FLAG_SET_MF_SIZE(flags, MIFARE_1K_MAX_BYTES);
     DbprintfEx(FLAG_NEWLINE, "\n\n\n\n\n\n\n\nn\n\nn\n\n\nflags: %d (0x%02x)", flags, flags);
     cjSetCursLeft();
     SpinOff(1000);
@@ -821,24 +798,24 @@ int e_MifareECardLoad(uint32_t numofsectors, uint8_t keytype) {
         }
 
         for (uint8_t blockNo = 0; isOK && blockNo < NumBlocksPerSector(s); blockNo++) {
-            if (isOK && mifare_classic_readblock(pcs, colin_cjcuid, FirstBlockOfSector(s) + blockNo, dataoutbuf)) {
+            if (isOK && mifare_classic_readblock(pcs, FirstBlockOfSector(s) + blockNo, dataoutbuf)) {
                 isOK = false;
                 break;
             };
             if (isOK) {
                 if (blockNo < NumBlocksPerSector(s) - 1) {
-                    emlSetMem(dataoutbuf, FirstBlockOfSector(s) + blockNo, 1);
+                    emlSetMem_xt(dataoutbuf, FirstBlockOfSector(s) + blockNo, 1, 16);
                 } else {
                     // sector trailer, keep the keys, set only the AC
-                    emlGetMem(dataoutbuf2, FirstBlockOfSector(s) + blockNo, 1);
+                    emlGetMem_xt(dataoutbuf2, FirstBlockOfSector(s) + blockNo, 1, MIFARE_BLOCK_SIZE);
                     memcpy(&dataoutbuf2[6], &dataoutbuf[6], 4);
-                    emlSetMem(dataoutbuf2, FirstBlockOfSector(s) + blockNo, 1);
+                    emlSetMem_xt(dataoutbuf2, FirstBlockOfSector(s) + blockNo, 1, 16);
                 }
             }
         }
     }
 
-    int res = mifare_classic_halt(pcs, colin_cjcuid);
+    int res = mifare_classic_halt(pcs);
     (void)res;
 
     crypto1_deinit(pcs);
@@ -901,7 +878,7 @@ void saMifareMakeTag(void) {
     int flags = 0;
     for (int blockNum = 0; blockNum < 16 * 4; blockNum++) {
         uint8_t mblock[16];
-        emlGetMem(mblock, blockNum, 1);
+        emlGetMem_xt(mblock, blockNum, 1, MIFARE_BLOCK_SIZE);
         // switch on field and send magic sequence
         if (blockNum == 0)
             flags = 0x08 + 0x02;
@@ -986,7 +963,7 @@ int saMifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *data
                 break;
             };
 
-            if (mifare_classic_halt(NULL, colin_cjcuid)) {
+            if (mifare_classic_halt(NULL)) {
                 DbprintfEx(FLAG_NEWLINE, "Halt error");
                 break;
             };
@@ -995,18 +972,18 @@ int saMifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *data
         // reset chip
         if (needWipe) {
             ReaderTransmitBitsPar(wupC1, 7, 0, NULL);
-            if (!ReaderReceive(receivedAnswer, receivedAnswerPar) || (receivedAnswer[0] != 0x0a)) {
+            if ((ReaderReceive(receivedAnswer, sizeof(receivedAnswer), receivedAnswerPar) == 0) || (receivedAnswer[0] != 0x0a)) {
                 DbprintfEx(FLAG_NEWLINE, "wupC1 error");
                 break;
             };
 
             ReaderTransmit(wipeC, sizeof(wipeC), NULL);
-            if (!ReaderReceive(receivedAnswer, receivedAnswerPar) || (receivedAnswer[0] != 0x0a)) {
+            if ((ReaderReceive(receivedAnswer, sizeof(receivedAnswer), receivedAnswerPar) == 0) || (receivedAnswer[0] != 0x0a)) {
                 DbprintfEx(FLAG_NEWLINE, "wipeC error");
                 break;
             };
 
-            if (mifare_classic_halt(NULL, colin_cjcuid)) {
+            if (mifare_classic_halt(NULL)) {
                 DbprintfEx(FLAG_NEWLINE, "Halt error");
                 break;
             };
@@ -1016,19 +993,19 @@ int saMifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *data
         // write block
         if (workFlags & 0x02) {
             ReaderTransmitBitsPar(wupC1, 7, 0, NULL);
-            if (!ReaderReceive(receivedAnswer, receivedAnswerPar) || (receivedAnswer[0] != 0x0a)) {
+            if ((ReaderReceive(receivedAnswer, sizeof(receivedAnswer), receivedAnswerPar) == 0) || (receivedAnswer[0] != 0x0a)) {
                 DbprintfEx(FLAG_NEWLINE, "wupC1 error");
                 break;
             };
 
             ReaderTransmit(wupC2, sizeof(wupC2), NULL);
-            if (!ReaderReceive(receivedAnswer, receivedAnswerPar) || (receivedAnswer[0] != 0x0a)) {
+            if ((ReaderReceive(receivedAnswer, sizeof(receivedAnswer), receivedAnswerPar) == 0) || (receivedAnswer[0] != 0x0a)) {
                 DbprintfEx(FLAG_NEWLINE, "wupC2 errorv");
                 break;
             };
         }
 
-        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, 0xA0, blockNo, receivedAnswer, receivedAnswerPar, NULL) != 1) ||
+        if ((mifare_sendcmd_short(NULL, CRYPT_NONE, 0xA0, blockNo, receivedAnswer, sizeof(receivedAnswer), receivedAnswerPar, NULL) != 1) ||
                 (receivedAnswer[0] != 0x0a)) {
             DbprintfEx(FLAG_NEWLINE, "write block send command error");
             break;
@@ -1037,13 +1014,13 @@ int saMifareCSetBlock(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint8_t *data
         memcpy(d_block, datain, 16);
         AddCrc14A(d_block, 16);
         ReaderTransmit(d_block, sizeof(d_block), NULL);
-        if ((ReaderReceive(receivedAnswer, receivedAnswerPar) != 1) || (receivedAnswer[0] != 0x0a)) {
+        if ((ReaderReceive(receivedAnswer, sizeof(receivedAnswer), receivedAnswerPar) != 1) || (receivedAnswer[0] != 0x0a)) {
             DbprintfEx(FLAG_NEWLINE, "write block send data error");
             break;
         };
 
         if (workFlags & 0x04) {
-            if (mifare_classic_halt(NULL, colin_cjcuid)) {
+            if (mifare_classic_halt(NULL)) {
                 cjSetCursFRight();
 
                 DbprintfEx(FLAG_NEWLINE, "Halt error");

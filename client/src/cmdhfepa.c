@@ -73,7 +73,6 @@ static int CmdHFEPACollectPACENonces(const char *Cmd) {
         PacketResponseNG resp;
         clearCommandBuffer();
         SendCommandNG(CMD_HF_EPA_COLLECT_NONCE, (uint8_t *)&payload, sizeof(payload));
-
         WaitForResponse(CMD_HF_EPA_COLLECT_NONCE, &resp);
 
         // check if command failed
@@ -148,7 +147,7 @@ static int CmdHFEPAPACEReplay(const char *Cmd) {
     // Proxmark response
     PacketResponseNG resp;
 
-    // transfer the APDUs to the Proxmark
+    // transfer the APDUs to the Proxmark3
     uint8_t data[PM3_CMD_DATA_SIZE];
     // fast push mode
     g_conn.block_after_ACK = true;
@@ -172,7 +171,7 @@ static int CmdHFEPAPACEReplay(const char *Cmd) {
             clearCommandBuffer();
             // arg0: APDU number
             // arg1: offset into the APDU
-            SendCommandOLD(CMD_HF_EPA_REPLAY, i + 1, j * sizeof(data), packet_length, data, packet_length);
+            SendCommandMIX(CMD_HF_EPA_REPLAY, i + 1, j * sizeof(data), packet_length, data, packet_length);
             if (WaitForResponseTimeout(CMD_HF_EPA_REPLAY, &resp, 2500) == false) {
                 PrintAndLogEx(WARNING, "command time out");
                 return PM3_ETIMEOUT;
@@ -228,7 +227,7 @@ static int CmdHFEPAPACESimulate(const char *Cmd) {
     CLIExecWithReturn(ctx, Cmd, argtable, false);
 
 //    bool use_pc = arg_get_lit(ctx, 1);
-//	uint8_t pwd_type = 0;
+//  uint8_t pwd_type = 0;
 
     int plen = 0;
     uint8_t pwd[6] = {0};
@@ -241,7 +240,6 @@ static int CmdHFEPAPACESimulate(const char *Cmd) {
 
     clearCommandBuffer();
     SendCommandMIX(CMD_HF_EPA_PACE_SIMULATE, 0, 0, 0, pwd, plen);
-
     PacketResponseNG resp;
     WaitForResponse(CMD_ACK, &resp);
 
@@ -273,7 +271,7 @@ static command_t CommandTable[] = {
     {"help",    CmdHelp,                   AlwaysAvailable, "This help"},
     {"cnonces", CmdHFEPACollectPACENonces, IfPm3Iso14443,   "Acquire encrypted PACE nonces of specific size"},
     {"replay",  CmdHFEPAPACEReplay,        IfPm3Iso14443,   "Perform PACE protocol by replaying given APDUs"},
-    {"sim",     CmdHFEPAPACESimulate,	   IfPm3Iso14443,   "Simulate PACE protocol"},
+    {"sim",     CmdHFEPAPACESimulate,      IfPm3Iso14443,   "Simulate PACE protocol"},
     {NULL, NULL, NULL, NULL}
 };
 
